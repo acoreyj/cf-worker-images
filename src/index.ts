@@ -16,10 +16,8 @@ export default {
     // If its a request for an image, and its NOT a request from Cloudinary for a source iamge
     // Then we want to handle it and return an optimized images from Cloundary
     if (isImageRequest(request) && !isCloudinaryRequest(request)) {
-      const imageRequest = new Request(
-        getImageOriginUrl(env, request),
-        request
-      );
+      const url = await getImageOriginUrl(env, request);
+      const imageRequest = new Request(url, request);
       // Call the default Cloudflare fetch method to get the image from Cloudinary
       return fetch(imageRequest);
     } else {

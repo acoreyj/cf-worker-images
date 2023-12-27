@@ -1,15 +1,11 @@
-import {
-  UserAgentCapabilities,
-  getDeviceType,
-  Env,
-  getOriginalRequestHostReplace,
-  getUserAgentCapabilities,
-} from "./lib";
+import { Env, getOriginalRequestHostReplace } from "./lib";
 
 type ImageFormat = "jpg" | "png" | "webp" | "gif" | "avif";
 
 const PARAM_FORMAT = "f";
 const PARAM_POSTER = "poster";
+const PARAM_WIDTH = "w";
+const PARAMS = [PARAM_FORMAT, PARAM_POSTER, PARAM_WIDTH] as const;
 
 const getImageFormat = (request: Request): ImageFormat | undefined => {
   const url = new URL(request.url);
@@ -36,25 +32,25 @@ const getImageFormat = (request: Request): ImageFormat | undefined => {
 
 const getImageOutputOptions = (
   request: Request,
-  format: ImageFormat | undefined,
-  capabilities: UserAgentCapabilities
+  format: ImageFormat | undefined
 ): string[] => {
   // Handle a specific format request, for example converting an animated GIF to a WEBM video
   // with a query param like: /image/12345.gif?f=webm
   const url = new URL(request.url);
-  const queryParamFormat = url.searchParams.get(PARAM_FORMAT);
-  if (queryParamFormat) {
-    return [`f_${queryParamFormat}`];
-  }
+  const queryParamFormat = url.searchParams.get(PARAM_FORMAT)
+    ? `f_${url.searchParams.get(PARAM_FORMAT)}`
+    : undefined;
+
+  const queryParamWidth = url.searchParams.get(PARAM_WIDTH)
+    ? `w_${url.searchParams.get(PARAM_WIDTH)}`
+    : undefined;
 
   // Generate a poster (image) from a video, with a query param like: /image/12345.mp4?poster=1
-  const isPoster = url.searchParams.get(PARAM_POSTER) === "1";
+  const isPoster = url.searchParams.get(PARAM_POSTER);
   if (isPoster) {
     // pg_0 tells Cloudinary to use the first frame of the video
     // try to deliver the poster in the most optimal format
-    if (capabilities.avif) return ["pg_0", "f_avif"];
-    if (capabilities.webp) return ["pg_0", "f_webp"];
-    return ["pg_0", "f_png"];
+    return ["pg_0", queryParamFormat || "f_avif"];
   }
 
   const options: string[] = [];
@@ -66,28 +62,11 @@ const getImageOutputOptions = (
   } else {
     // scale images down (but never up)
     options.push("c_limit");
-    const deviceType = getDeviceType(request);
-    // Choose a max width based on deviceType
-    if (deviceType === "mobile") {
-      options.push("w_640");
-    } else if (deviceType === "tablet") {
-      options.push("w_960");
-    } else {
-      options.push("w_1200");
-    }
+    options.push(queryParamWidth || "w_1280");
     // Let Cloudinary optimize the image for quality
     options.push("q_auto:good");
     // if we know what format it is (and its not GIF) then we can optimize it
-    if (format) {
-      if (capabilities.avif) {
-        options.push("f_avif");
-      } else if (capabilities.webp) {
-        options.push("f_webp");
-      } else if (format === "webp" || format === "avif") {
-        // Downgrade from modern formats to PNG if not supported
-        options.push("f_png");
-      }
-    }
+    options.push(queryParamFormat || "f_avif");
   }
 
   return options;
@@ -98,25 +77,32 @@ export const isCloudinaryRequest = (req: Request) => {
   return userAgent && userAgent.indexOf("Cloudinary") >= 0;
 };
 
-export const getImageOriginUrl = (env: Env, request: Request) => {
+export const getImageOriginUrl = async (env: Env, request: Request) => {
+  const apiSecret = env.CLOUDINARY_API_SECRET;
+  // const apiKey = env.CLOUDINARY_API_KEY;
+  const cloud = env.CLOUDINARY_CLOUD;
   // Check if the client suppports AVIF or WebP
-  const capabilities = getUserAgentCapabilities(request);
   // Determine the format of the original image
   const origFormat = getImageFormat(request);
   // Do the actual work of choosing the optimized configuration for Cloudinary for this image
-  const options = getImageOutputOptions(request, origFormat, capabilities);
+  const options = getImageOutputOptions(request, origFormat);
 
   // Does nothing in production, but in dev makes cloudinary come back to our dev worker
   const workerRequest = getOriginalRequestHostReplace(env, request);
 
   // Remove the query string parameters that are meant for us (that we checked for already)
   const parsed = new URL(workerRequest.url);
-  parsed.searchParams.delete(PARAM_FORMAT);
-  parsed.searchParams.delete(PARAM_POSTER);
+  PARAMS.forEach((p) => parsed.searchParams.delete(p));
 
-  const url = `https://res.cloudinary.com/${
-    env.CLOUDINARY_CLOUD
-  }/image/fetch/${options.join(",")}/${parsed.toString()}`;
-  console.log("Rewriting image origin url", url);
+  const toHash = `${options.join(",")}/${parsed.toString()}${apiSecret}`;
+  const hash = await crypto.subtle.digest(
+    "SHA-1",
+    new TextEncoder().encode(toHash)
+  );
+  const signature = btoa(String.fromCharCode(...new Uint8Array(hash)));
+  const urlSignature = `s--${signature.substring(0, 8)}--`;
+  const url = `https://res.cloudinary.com/${cloud}/image/fetch/${urlSignature}/${options.join(
+    ","
+  )}/${parsed.toString()}`;
   return url;
 };
