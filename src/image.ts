@@ -1,4 +1,4 @@
-import { Env, getOriginalRequestHostReplace } from "./lib";
+import { Env } from "./lib";
 
 type ImageFormat = "jpg" | "png" | "webp" | "gif" | "avif";
 
@@ -66,17 +66,24 @@ const getImageOutputOptions = (
     // Let Cloudinary optimize the image for quality
     options.push("q_auto:good");
     // if we know what format it is (and its not GIF) then we can optimize it
-    options.push(queryParamFormat || "f_avif");
+    options.push(
+      queryParamFormat ? queryParamFormat : format ? `f_${format}` : "f_avif"
+    );
   }
 
   return options;
 };
 
-export const isCloudinaryRequest = (req: Request) => {
-  const userAgent = req.headers.get("User-Agent");
-  return userAgent && userAgent.indexOf("Cloudinary") >= 0;
-};
-
+async function hashString(inputString: string) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(inputString);
+  const hashBuffer = await crypto.subtle.digest("SHA-1", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return btoa(hashHex);
+}
 export const getImageOriginUrl = async (env: Env, request: Request) => {
   const apiSecret = env.CLOUDINARY_API_SECRET;
   // const apiKey = env.CLOUDINARY_API_KEY;
@@ -86,23 +93,18 @@ export const getImageOriginUrl = async (env: Env, request: Request) => {
   const origFormat = getImageFormat(request);
   // Do the actual work of choosing the optimized configuration for Cloudinary for this image
   const options = getImageOutputOptions(request, origFormat);
-
-  // Does nothing in production, but in dev makes cloudinary come back to our dev worker
-  const workerRequest = getOriginalRequestHostReplace(env, request);
+  console.log("Using cloudinary options", options);
 
   // Remove the query string parameters that are meant for us (that we checked for already)
-  const parsed = new URL(workerRequest.url);
+  const parsed = new URL(request.url);
   PARAMS.forEach((p) => parsed.searchParams.delete(p));
 
   const toHash = `${options.join(",")}/${parsed.toString()}${apiSecret}`;
-  const hash = await crypto.subtle.digest(
-    "SHA-1",
-    new TextEncoder().encode(toHash)
-  );
-  const signature = btoa(String.fromCharCode(...new Uint8Array(hash)));
-  const urlSignature = `s--${signature.substring(0, 8)}--`;
+  const hash = await hashString(toHash);
+  const urlSignature = `s--${hash.substring(0, 8)}--`;
   const url = `https://res.cloudinary.com/${cloud}/image/fetch/${urlSignature}/${options.join(
     ","
   )}/${parsed.toString()}`;
+  console.log("Using cloudinary url", url);
   return url;
 };
