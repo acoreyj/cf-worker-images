@@ -99,7 +99,7 @@ export const getImageOriginUrl = async (env: Env, request: Request) => {
   const parsed = new URL(request.url);
   PARAMS.forEach((p) => parsed.searchParams.delete(p));
 
-  const toHash = `${options.join(",")}/${parsed.toString()}${apiSecret}`;
+  const toHash = `${options.join(",")}/${parsed.toString()}.${apiSecret}`;
   const hash = await hashString(toHash);
   const urlSignature = `s--${hash.substring(0, 8)}--`;
   const url = `https://res.cloudinary.com/${cloud}/image/fetch/${urlSignature}/${options.join(
